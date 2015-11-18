@@ -1,4 +1,6 @@
 /taskcluster-aws-provisioner.conf.json
+/user-config.yml
+
 /node_modules/
 provisioner-test-*.pem
 

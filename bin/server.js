@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 let path = require('path');
-let debug = require('debug')('aws-provisioner:bin:server');
+let debug = require('debug')('aws-app.bin:server');
 let base = require('taskcluster-base');
 let workerType = require('../lib/worker-type');
 let secret = require('../lib/secret');
@@ -12,46 +12,26 @@ let _ = require('lodash');
 let series = require('../lib/influx-series');
 
 /** Launch server */
-let launch = async function (profile) {
+let launch = async function () {
   // Load configuration
-  let cfg = base.config({
-    defaults: require('../config/defaults'),
-    profile: require('../config/' + profile),
-    envs: [
-      'provisioner_publishMetaData',
-      'provisioner_awsInstancePubkey',
-      'provisioner_awsKeyPrefix',
-      'taskcluster_queueBaseUrl',
-      'taskcluster_authBaseUrl',
-      'taskcluster_credentials_clientId',
-      'taskcluster_credentials_accessToken',
-      'pulse_username',
-      'pulse_password',
-      'aws_accessKeyId',
-      'aws_secretAccessKey',
-      'azure_accountName',
-      'azure_accountKey',
-      'influx_connectionString',
-    ],
-    filename: 'taskcluster-aws-provisioner',
-  });
+  let cfg = require('typed-env-config')();
 
-  let keyPrefix = cfg.get('provisioner:awsKeyPrefix');
-  let provisionerId = cfg.get('provisioner:id');
-  let provisionerBaseUrl = cfg.get('server:publicUrl') + '/v1';
+  let keyPrefix = cfg.app.awsKeyPrefix;
+  let provisionerId = cfg.app.id;
+  let provisionerBaseUrl = cfg.server.publicUrl + '/v1';
 
   // Create InfluxDB connection for submitting statistics
   let influx = new base.stats.Influx({
-    connectionString: cfg.get('influx:connectionString'),
-    maxDelay: cfg.get('influx:maxDelay'),
-    maxPendingPoints: cfg.get('influx:maxPendingPoints'),
+    connectionString: cfg.influx.connectionString,
+    maxDelay: cfg.influx.maxDelay,
+    maxPendingPoints: cfg.influx.maxPendingPoints,
   });
 
   // Configure me an EC2 API instance.  This one should be able
   // to run in any region, which we'll limit by the ones
   // store in the worker definition
   // NOTE: Should we use ec2.describeRegions? meh
-  let ec2 = new Aws('EC2', _.omit(cfg.get('aws'), 'region'), [
+  let ec2 = new Aws('EC2', _.omit(cfg.aws, 'region'), [
     'us-east-1', 'us-west-1', 'us-west-2',
     'eu-west-1', 'eu-central-1',
     'ap-southeast-1', 'ap-southeast-2', 'ap-northeast-1',
@@ -61,34 +41,31 @@ let launch = async function (profile) {
   // Start monitoring the process
   base.stats.startProcessUsageReporting({
     drain: influx,
-    component: cfg.get('provisioner:statsComponent'),
+    component: cfg.app.statsComponent,
     process: 'server',
   });
 
   // Configure WorkerType entities
   let WorkerType = workerType.setup({
-    table: cfg.get('provisioner:workerTypeTableName'),
-    credentials: cfg.get('azure'),
+    table: cfg.app.workerTypeTableName,
+    credentials: cfg.azure,
     context: {
       keyPrefix: keyPrefix,
       provisionerId: provisionerId,
       provisionerBaseUrl: provisionerBaseUrl,
     },
-    //account: cfg.get('azure:accountName'),
-    //credentials: cfg.get('taskcluster:credentials'),
-    //authBaseUrl: cfg.get('taskcluster:authBaseUrl'),
   });
 
   // Configure WorkerState entities
   let WorkerState = workerState.setup({
-    table: cfg.get('provisioner:workerStateTableName'),
-    credentials: cfg.get('azure'),
+    table: cfg.app.workerStateTableName,
+    credentials: cfg.azure,
   });
 
   // Configure WorkerType entities
   let Secret = secret.setup({
-    table: cfg.get('provisioner:secretTableName'),
-    credentials: cfg.get('azure'),
+    table: cfg.app.secretTableName,
+    credentials: cfg.azure,
   });
 
   // Get promise for workerType table created (we'll await it later)
@@ -103,21 +80,21 @@ let launch = async function (profile) {
   let validator = await base.validator({
     folder: path.join(__dirname, '..', 'schemas'),
     constants: require('../schemas/constants'),
-    publish: cfg.get('provisioner:publishMetaData') === 'true',
+    publish: cfg.app.publishMetaData === 'true',
     schemaPrefix: 'aws-provisioner/v1/',
-    aws: cfg.get('aws'),
+    aws: cfg.aws,
   });
 
   // Store the publisher to inject it as context into the API
   let publisher = await exchanges.setup({
-    credentials: cfg.get('pulse'),
-    exchangePrefix: cfg.get('provisioner:exchangePrefix'),
+    credentials: cfg.pulse,
+    exchangePrefix: cfg.app.exchangePrefix,
     validator: validator,
     referencePrefix: 'aws-provisioner/v1/exchanges.json',
-    publish: cfg.get('provisioner:publishMetaData') === 'true',
-    aws: cfg.get('aws'),
+    publish: cfg.app.publishMetaData === 'true',
+    aws: cfg.aws,
     drain: influx,
-    component: cfg.get('provisioner:statsComponent'),
+    component: cfg.app.statsComponent,
     process: 'server',
   });
 
@@ -138,24 +115,24 @@ let launch = async function (profile) {
       provisionerId: provisionerId,
       provisionerBaseUrl: provisionerBaseUrl,
       reportInstanceStarted: reportInstanceStarted,
-      credentials: cfg.get('taskcluster:credentials'),
+      credentials: cfg.taskcluster.credentials,
     },
     validator: validator,
-    authBaseUrl: cfg.get('taskcluster:authBaseUrl'),
-    publish: cfg.get('provisioner:publishMetaData') === 'true',
-    baseUrl: cfg.get('server:publicUrl') + '/v1',
+    authBaseUrl: cfg.taskcluster.authBaseUrl,
+    publish: cfg.app.publishMetaData === 'true',
+    baseUrl: cfg.server.publicUrl + '/v1',
     referencePrefix: 'aws-provisioner/v1/api.json',
-    aws: cfg.get('aws'),
-    component: cfg.get('provisioner:statsComponent'),
+    aws: cfg.aws,
+    component: cfg.app.statsComponent,
     drain: influx,
   });
 
   // Create app
   let app = base.app({
-    port: Number(process.env.PORT || cfg.get('server:port')),
-    env: cfg.get('server:env'),
-    forceSSL: cfg.get('server:forceSSL'),
-    trustProxy: cfg.get('server:trustProxy'),
+    port: cfg.server.port,
+    env: cfg.server.env,
+    forceSSL: cfg.server.forceSSL,
+    trustProxy: cfg.server.trustProxy,
   });
 
   // Mount API router
@@ -167,14 +144,7 @@ let launch = async function (profile) {
 
 // If server.js is executed start the server
 if (!module.parent) {
-  // Find configuration profile
-  let profile_ = process.argv[2] || process.env.NODE_ENV;
-  if (!profile_) {
-    console.log('Usage: server.js [profile]');
-    console.error('ERROR: No configuration profile is provided');
-  }
-  // Launch with given profile
-  launch(profile_).then(function () {
+  launch().then(function () {
     debug('launched server successfully');
   }).catch(function (err) {
     debug('failed to start server, err: %s, as JSON: %j', err, err, err.stack);

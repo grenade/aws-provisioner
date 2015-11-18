@@ -9,50 +9,30 @@ let AwsManager = require('../lib/aws-manager');
 let taskcluster = require('taskcluster-client');
 let _ = require('lodash');
 
-let launch = function (profile) {
-  let cfg = base.config({
-    defaults: require('../config/defaults.js'),
-    profile: require('../config/' + profile),
-    filename: 'taskcluster-aws-provisioner',
-    envs: [
-      'provisioner_publishMetaData',
-      'provisioner_awsInstancePubkey',
-      'provisioner_awsKeyPrefix',
-      'taskcluster_queueBaseUrl',
-      'taskcluster_authBaseUrl',
-      'taskcluster_credentials_clientId',
-      'taskcluster_credentials_accessToken',
-      'pulse_username',
-      'pulse_password',
-      'aws_accessKeyId',
-      'aws_secretAccessKey',
-      'azure_accountName',
-      'azure_accountKey',
-      'influx_connectionString',
-    ],
-  });
+let launch = function () {
+  let cfg = require('typed-env-config')();
 
-  let allowedRegions = cfg.get('provisioner:allowedRegions').split(',');
-  let keyPrefix = cfg.get('provisioner:awsKeyPrefix');
-  let pubKey = cfg.get('provisioner:awsInstancePubkey');
-  let provisionerId = cfg.get('provisioner:id');
-  let provisionerBaseUrl = cfg.get('server:publicUrl') + '/v1';
-  let maxInstanceLife = cfg.get('provisioner:maxInstanceLife');
+  let allowedRegions = cfg.app.allowedRegions.split(',');
+  let keyPrefix = cfg.app.awsKeyPrefix;
+  let pubKey = cfg.app.awsInstancePubkey;
+  let provisionerId = cfg.app.id;
+  let provisionerBaseUrl = cfg.server.publicUrl + '/v1';
+  let maxInstanceLife = cfg.app.maxInstanceLife;
 
   let influx = new base.stats.Influx({
-    connectionString: cfg.get('influx:connectionString'),
-    maxDelay: cfg.get('influx:maxDelay'),
-    maxPendingPoints: cfg.get('influx:maxPendingPoints'),
+    connectionString: cfg.influx.connectionString,
+    maxDelay: cfg.influx.maxDelay,
+    maxPendingPoints: cfg.influx.maxPendingPoints,
   });
 
   let Secret = secret.setup({
-    table: cfg.get('provisioner:secretTableName'),
-    credentials: cfg.get('azure'),
+    table: cfg.app.secretTableName,
+    credentials: cfg.azure,
   });
 
   let WorkerType = workerType.setup({
-    table: cfg.get('provisioner:workerTypeTableName'),
-    credentials: cfg.get('azure'),
+    table: cfg.app.workerTypeTableName,
+    credentials: cfg.azure,
     context: {
       keyPrefix: keyPrefix,
       provisionerId: provisionerId,
@@ -61,13 +41,13 @@ let launch = function (profile) {
   });
 
   let WorkerState = workerState.setup({
-    table: cfg.get('provisioner:workerStateTableName'),
-    credentials: cfg.get('azure'),
+    table: cfg.app.workerStateTableName,
+    credentials: cfg.azure,
   });
 
   // Create all the things which need to be injected into the
   // provisioner
-  let ec2 = new Aws('EC2', _.omit(cfg.get('aws'), 'region'), allowedRegions);
+  let ec2 = new Aws('EC2', _.omit(cfg.aws, 'region'), allowedRegions);
   let awsManager = new AwsManager(
       ec2,
       provisionerId,
@@ -75,7 +55,7 @@ let launch = function (profile) {
       pubKey,
       maxInstanceLife,
       influx);
-  let queue = new taskcluster.Queue({credentials: cfg.get('taskcluster:credentials')});
+  let queue = new taskcluster.Queue({credentials: cfg.taskcluster.credentials});
 
   let config = {
     WorkerType: WorkerType,
@@ -83,10 +63,10 @@ let launch = function (profile) {
     WorkerState: WorkerState,
     queue: queue,
     provisionerId: provisionerId,
-    taskcluster: cfg.get('taskcluster'),
+    taskcluster: cfg.taskcluster,
     influx: influx,
     awsManager: awsManager,
-    provisionIterationInterval: cfg.get('provisioner:iterationInterval'),
+    provisionIterationInterval: cfg.app.iterationInterval,
   };
 
   let provisioner = new provision.Provisioner(config);
@@ -100,12 +80,7 @@ let launch = function (profile) {
 // Only start up the server if we are running as a script
 if (!module.parent) {
   // Find configuration profile
-  let profile_ = process.argv[2] || process.env.NODE_ENV;
-  if (!profile_) {
-    console.log('Usage: server.js [profile]');
-    console.error('ERROR: No configuration profile is provided');
-  }
-  launch(profile_);
+  launch();
   debug('launched provisioner successfully');
 }
 

@@ -22,23 +22,19 @@ var defaultClients = [
 ];
 
 // Load configuration
-var cfg = base.config({
-  defaults: require('../config/defaults'),
-  profile: require('../config/test'),
-  filename: 'taskcluster-aws-provisioner',
-});
+var cfg = require('typed-env-config')();
 exports.cfg = cfg;
 
 // Skip tests if no AWS credentials is configured
-if (!cfg.get('aws:secretAccessKey') ||
-    !cfg.get('azure:accountKey') ||
-    !cfg.get('pulse:password')) {
+if (!cfg.aws.secretAccessKey ||
+    !cfg.azure.accountKey ||
+    !cfg.pulse.password) {
   console.log('Skip tests due to missing credentials!');
   throw new Error('cannot run tests due to missing credentials');
 }
 
 // Configure PulseTestReceiver
-exports.events = new base.testing.PulseTestReceiver(cfg.get('pulse'), mocha);
+exports.events = new base.testing.PulseTestReceiver(cfg.pulse, mocha);
 
 // Hold reference to authServer
 var authServer = null;
@@ -65,26 +61,13 @@ mocha.before(async () => {
       // preventing tests from exiting
       agent: require('http').globalAgent,
       baseUrl: exports.baseUrl,
-      credentials: {
-        clientId: 'test-client',
-        accessToken: 'none',
-      },
+      credentials: cfg.taskcluster.credentials,
       authorizedScopes: scopes.length > 0 ? scopes : undefined,
     });
   };
 
   // Initialize provisioner client
   exports.scopes();
-
-  /*
-  // Create client for binding to reference
-  var exchangeReference = exchanges.reference({
-    exchangePrefix:   cfg.get('provisioner:exchangePrefix'),
-    credentials:      cfg.get('pulse')
-  });
-  helper.AwsProvisionerEvents = taskcluster.createClient(exchangeReference);
-  helper.awsProvisionerEvents = new helper.AwsProvisionerEvents();
-  */
 });
 
 // Setup before each test
