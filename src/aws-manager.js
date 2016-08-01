@@ -5,9 +5,9 @@ let assert = require('assert');
 let shuffle = require('knuth-shuffle');
 let taskcluster = require('taskcluster-client');
 let series = require('./influx-series');
-let keyPairs = require('./key-pairs');
 let _ = require('lodash');
 let delayer = require('./delayer');
+let tagUtils = require('resource-to-tag');
 
 const MAX_ITERATIONS_FOR_STATE_RESOLUTION = 20;
 
@@ -63,18 +63,6 @@ function dateForInflux(thingy) {
  *      This is the id of this provisioner (e.g. aws-provisioner-v1').  This
  *      value is passed through to the Queue verbatim and is used to find the
  *      number of pending tasks for a given provisionerId/workerType combo
- * keyPrefix:
- *      We use a prefix on KeyPair.Name for a given instance to store metadata.
- *      The EC2 api provides for metadata to be stored in Tags, but tags are
- *      not able to be set at the time a spot request is requested.  We use
- *      this as a workaround.  This is currently the name of the worker type
- *      the instances/request is associated with as well as a hash of the ssh
- *      KeyPair key material so that we can upgrade ssh keys.
- * pubKey:
- *      public key data to be stored as the KeyPair data.  We use a single
- *      public key for all instances.  Ideally in the future we would actually
- *      use a public key that no one has the matching private key for so that
- *      we effectively disable ssh access to our machines.
  * maxInstanceLife:
  *      absolute upper bounds of instance life.  This should never be hit, but
  *      is rather a safety limit to ensure we don't have things living forever.
@@ -83,24 +71,18 @@ function dateForInflux(thingy) {
  *      submit data points to an influx instance
  */
 class AwsManager {
-  constructor(ec2, provisionerId, keyPrefix, pubKey, maxInstanceLife, influx) {
+  constructor(ec2, provisionerId, ResourceToTag, maxInstanceLife, influx) {
     assert(ec2);
     assert(provisionerId);
-    assert(keyPrefix);
-    assert(pubKey);
+    assert(ResourceToTag);
     assert(maxInstanceLife);
     assert(influx);
 
     this.ec2 = ec2;
     this.provisionerId = provisionerId;
-    this.keyPrefix = keyPrefix;
-    this.pubKey = pubKey;
+    this.ResourceToTag = ResourceToTag;
     this.maxInstanceLife = maxInstanceLife;
     this.influx = influx;
-
-    // Known keypairs are tracked so that we don't have to retreive the list of
-    // all known key pairs on every iteration.
-    this.__knownKeyPairs = [];
 
     // The responses of the EC2 Api's view of state
     this.__apiState = {
@@ -196,8 +178,8 @@ class AwsManager {
           ec2.describeInstances({
             Filters: [
               {
-                Name: 'key-name',
-                Values: [this.keyPrefix + '*'],
+                Name: 'tag:Owner',
+                Values: [this.provisionerId],
               },
               {
                 Name: 'instance-state-name',
@@ -209,8 +191,8 @@ class AwsManager {
           ec2.describeSpotInstanceRequests({
             Filters: [
               {
-                Name: 'launch.key-name',
-                Values: [this.keyPrefix + '*'],
+                Name: 'tag:Owner',
+                Values: [this.provisionerId],
               }, {
                 Name: 'state',
                 Values: ['open'],
@@ -221,8 +203,8 @@ class AwsManager {
           ec2.describeInstances({
             Filters: [
               {
-                Name: 'key-name',
-                Values: [this.keyPrefix + '*'],
+                Name: 'tag:Owner',
+                Values: [this.provisionerId],
               },
               {
                 Name: 'instance-state-name',
@@ -234,8 +216,8 @@ class AwsManager {
           ec2.describeSpotInstanceRequests({
             Filters: [
               {
-                Name: 'launch.key-name',
-                Values: [this.keyPrefix + '*'],
+                Name: 'tag:Owner',
+                Values: [this.provisionerId],
               }, {
                 Name: 'state',
                 Values: ['cancelled', 'failed', 'closed', 'active'],
@@ -267,12 +249,14 @@ class AwsManager {
         // Now let's classify them
         for (let reservation of response[0].data.Reservations) {
           for (let instance of reservation.Instances) {
-            let workerType = this.parseKeyPairName(instance.KeyName).workerType;
-            // Maybe use objFilter here
-            let filtered = instance;
-            filtered.Region = region;
-            filtered.WorkerType = workerType;
-            apiState.instances.push(filtered);
+            let workerType = tagUtils.getVal(instance.TagSet, 'Name');
+            if (!workerType) {
+              log.error({id: instance.InstanceId}, 'owned instance missing workerType');
+              continue;
+            }
+            instance.Region = region;
+            instance.WorkerType = workerType;
+            apiState.instances.push(instance);
           }
         };
 
@@ -281,14 +265,17 @@ class AwsManager {
         // and make new requests for their pending tasks
         let stalledSRIds = [];
         for (let request of response[1].data.SpotInstanceRequests) {
-          let workerType = this.parseKeyPairName(request.LaunchSpecification.KeyName).workerType;
-          let filtered = request;
-          filtered.Region = region;
-          filtered.WorkerType = workerType;
-          if (this._spotRequestStalled(filtered)) {
-            stalledSRIds.push(filtered.SpotInstanceRequestId);
+          let workerType = tagUtils.getVal(request.TagSet, 'Name');
+          if (!workerType) {
+            log.error({id: instance.InstanceId}, 'owned spot request missing workerType');
+            continue;
+          }
+          request.Region = region;
+          request.WorkerType = workerType;
+          if (this._spotRequestStalled(request)) {
+            stalledSRIds.push(request.SpotInstanceRequestId);
           } else {
-            apiState.requests.push(filtered);
+            apiState.requests.push(request);
           }
         }
 
@@ -300,12 +287,14 @@ class AwsManager {
         // Put the dead instances into the dead state object
         for (let reservation of response[2].data.Reservations) {
           for (let instance of reservation.Instances) {
-            let workerType = this.parseKeyPairName(instance.KeyName).workerType;
-            // Maybe use objFilter here
-            let filtered = instance;
-            filtered.Region = region;
-            filtered.WorkerType = workerType;
-            deadState.instances.push(filtered);
+            let workerType = tagUtils.getVal(instance.TagSet, 'Name');
+            if (!workerType) {
+              log.error({id: instance.InstanceId}, 'owned instance missing workerType');
+              continue;
+            }
+            instance.Region = region;
+            instance.WorkerType = workerType;
+            deadState.instances.push(instance);
           }
         };
         debug('put dead state instances into deadState variable in %s', region);
@@ -313,12 +302,14 @@ class AwsManager {
         // Put the dead requests into the dead state object
         let deadSpotRequests = [];
         for (let request of response[3].data.SpotInstanceRequests) {
-          let workerType = this.parseKeyPairName(request.LaunchSpecification.KeyName).workerType;
-          // Maybe use objFilter here
-          let filtered = request;
-          filtered.Region = region;
-          filtered.WorkerType = workerType;
-          deadState.requests.push(filtered);
+          let workerType = tagUtils.getVal(request.TagSet, 'Name');
+          if (!workerType) {
+            log.error({id: instance.InstanceId}, 'owned spot request missing workerType');
+            continue;
+          }
+          request.Region = region;
+          request.WorkerType = workerType;
+          deadState.requests.push(request);
         }
         debug('put dead state requests into deadState variable in %s', region);
 
@@ -824,6 +815,41 @@ class AwsManager {
   }
 
   /**
+   * Tag a specific resource
+   */
+  async tagResourceAsWorkerType(id, region, workerTypeName) {
+    assert(typeof id === 'string');
+    assert(typeof region === 'string');
+    assert(typeof workerTypeName === 'string');
+
+    return this.ec2[region].createTags({
+      Tags: [
+        {Key: 'Name', Value: workerTypeName},
+        {Key: 'Owner', Value: this.provisionerId},
+        {Key: 'WorkerType', Value: this.provisionerId + '/' + workerTypeName},
+      ],
+      Resources: [id],
+    }).promise();
+  }
+
+  async tagNeededResources() {
+    await this.ResourceToTag.scan({}, {
+      handler: async (x) => {
+        await this.ec2[x.region].createTags({
+          Tags: [
+            {Key: 'Name', Value: workerTypeName},
+            {Key: 'Owner', Value: this.provisionerId},
+            {Key: 'WorkerType', Value: this.provisionerId + '/' + workerTypeName},
+          ],
+          Resources: [id],         
+        }).promise();
+
+        await x.remove();
+      },
+    });
+  }
+
+  /**
    * Ensure (but only at best effort) that all provisioner owned resources
    * are tagged with appropriate tags.  These can be used by others to
    * get detailed pricing data, but they are not, nor should be, used by
@@ -1065,110 +1091,6 @@ class AwsManager {
 
     this._trackNewSpotRequest(info);
     return info;
-  }
-
-  /**
-   * wrapper for brevity
-   */
-  createPubKeyHash() {
-    return keyPairs.createPubKeyHash(this.pubKey);
-  }
-
-  /**
-   * wrapper for brevity
-   */
-  createKeyPairName(workerName) {
-    return keyPairs.createKeyPairName(this.keyPrefix, this.pubKey, workerName);
-  }
-
-  /**
-   * wrapper for brevity
-   */
-  parseKeyPairName(name) {
-    return keyPairs.parseKeyPairName(name);
-  }
-
-  /**
-   * We use KeyPair names to determine ownership and workerType in the EC2
-   * world because we can't tag SpotRequests until they've mutated into
-   * Instances.  This sucks and all, but hey, what else can we do?  This method
-   * checks which regions have the required KeyPair already and creates the
-   * KeyPair in regions which do not already have it.  Note that the
-   * __knownKeyPair cache should never become shared, since we rely on it not
-   * surviving restarts in the case that we start running this manager in
-   * another region.  If we didn't dump the cache, we could create the key in
-   * one region but not the new one that we add.  TODO: Look into what happens
-   * when we add a region to the list of allowed regions... I suspect that
-   * we'll end up having to track which regions the workerName is enabled in.
-   */
-  async createKeyPair(workerName) {
-    assert(workerName);
-
-    let keyName = this.createKeyPairName(workerName);
-
-    if (_.includes(this.__knownKeyPairs, keyName)) {
-      // Short circuit checking for a key but return
-      // a promise so this cache is invisible to the
-      // calling function from a non-cached instance
-      return;
-    }
-
-    await Promise.all(_.map(this.ec2, async (ec2, region) => {
-      let keyPairs = await ec2.describeKeyPairs({
-        Filters: [
-          {
-            Name: 'key-name',
-            Values: [keyName],
-          },
-        ],
-      }).promise();
-
-      // Since we're using a filter to look for *only* this
-      // key pair, the only possibility is 0 or 1 results
-      if (!keyPairs.data.KeyPairs[0]) {
-        debug('creating key pair %s', keyName);
-        await ec2.importKeyPair({
-          KeyName: keyName,
-          PublicKeyMaterial: this.pubKey,
-        }).promise();
-        debug('created key pair %s', keyName);
-      }
-    }));
-
-    this.__knownKeyPairs.push(keyName);
-  }
-
-  /**
-   * Delete a KeyPair when it's no longer needed.  This method does nothing
-   * more and you shouldn't run it until you've turned everything off.
-   */
-  async deleteKeyPair(workerName) {
-    assert(workerName);
-
-    let keyName = this.createKeyPairName(workerName);
-
-    debug('deleting %s', keyName);
-    await Promise.all(_.map(this.ec2, async (ec2, region) => {
-      let keyPairs = await ec2.describeKeyPairs({
-        Filters: [
-          {
-            Name: 'key-name',
-            Values: [keyName],
-          },
-        ],
-      }).promise();
-
-      // Since we're using a filter to look for *only* this
-      // key pair, the only possibility is 0 or 1 results
-      if (keyPairs.data.KeyPairs[0]) {
-        await ec2.deleteKeyPair({
-          KeyName: keyName,
-        });
-      }
-    }));
-    debug('deleted %s', keyName);
-
-    this.__knownKeyPairs = this.__knownKeyPairs.filter(k => k !== keyName);
   }
 
   /**

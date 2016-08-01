@@ -11,6 +11,7 @@ let taskcluster = require('taskcluster-client');
 let base = require('taskcluster-base');
 
 let workerType = require('./worker-type');
+let ResourceToTag = require('./resource-to-tag').ResourceToTag;
 let secret = require('./secret');
 let amiSet = require('./ami-set');
 let AwsManager = require('./aws-manager');
@@ -70,6 +71,17 @@ let load = base.loader({
         credentials: cfg.taskcluster.credentials,
       });
       return AmiSet;
+    },
+  },
+
+  ResourceToTag: {
+    requires: ['cfg'],
+    setup: async ({cfg}) => {
+      return ResourceToTag.setup({
+        account: cfg.azure.account,
+        table: cfg.app.resourceToTagTableName,
+        credentials: cfg.taskcluster.credentials,
+      });
     },
   },
 
@@ -237,13 +249,12 @@ let load = base.loader({
   },
 
   awsManager: {
-    requires: ['cfg', 'ec2', 'influx'],
-    setup: ({cfg, ec2, influx}) => {
+    requires: ['cfg', 'ec2', 'influx', 'ResourceToTag'],
+    setup: ({cfg, ec2, influx, ResourceToTag}) => {
       return new AwsManager(
         ec2,
         cfg.app.id,
-        cfg.app.awsKeyPrefix,
-        cfg.app.awsInstancePubkey,
+        ResourceToTag,
         cfg.app.maxInstanceLife,
         influx
       );

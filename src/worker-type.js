@@ -6,7 +6,6 @@ let assert = require('assert');
 let lodash = require('lodash');
 let util = require('util');
 let slugid = require('slugid');
-let keyPairs = require('./key-pairs');
 let _ = require('lodash');
 
 const KEY_CONST = 'worker-type';
@@ -483,7 +482,8 @@ WorkerType.createLaunchSpec = function(bid, worker, keyPrefix, provisionerId, pr
   }
 
   // Set the KeyPair, InstanceType and availability zone correctly
-  config.launchSpec.KeyName = keyPairs.createKeyPairName(keyPrefix, pubKey, workerName);
+  // XXX: We should create a keypair in the aws account and hook this into configs
+  config.launchSpec.KeyName = 'aws-provisioner-v1-key';
   config.launchSpec.InstanceType = bid.type;
 
   // We want to make sure that we overwrite the least that we need
