@@ -220,101 +220,21 @@ class AwsManager {
     // TODO: Consider using DescribeTags with filters to see if this instance
     // or spot request has already been tagged.  Also tag things as part of
     // requestSpotInstance
-    if (instanceId) {
-      // If we're here, we have not found a result.  This means that we should
-      // try to load the UserData if we can.  We do this because there's a chance
-      // that an instance becomes 'rouge'.  That state is where an instance keeps
-      // running but does not belong to any worker type.  In an ideal world, the
-      // provisioner would have its own credentials and its own set of instances
-      // and anything in the account would be owned by the provisioner.  If this
-      // were the case, we wouldn't need this since we could just kill all
-      // instances which aren't in the SRID->WorkerType map that we use above.
-
-      let workerType = await this.getWorkerTypeFromUserData(region, instanceId);
-      if (!workerType) {
-        // If we're here, we know that this is a managed instance.  We could either
-        // return the workerType to add that metadata to the internal picture of state,
-        // but since the desired outcome of that would be to have the rogue killer
-        // kill it, why not just short circuit that and kill it here.  We should
-        // have both a spot request id and an instance id here, but since it's so
-        // simple to make allowances for if we ever did ondemand, let's just do it
-        let i = [];
-        if (instanceId) {
-          i.push(instanceId);
-        }
-        let r = [];
-        if (srid) {
-          r.push(srid);
-        }
-        try {
-          await this.killCancel(region, i, r);
-          log.info({i, r}, 'killed a rogue instance while determining worker type');
-        } catch (err) { }
-        return null;
-      }
-
-      // Now we know how this instance maps back to a worker type, let's add it
-      // to the faster cache to avoid having to look up user data again.
-      this.__spotRequestIdCache.push({
-        id: srid,
-        region: region,
-        workerType: workerType,
-        created: Date.now(),
-      });
-
-    } else {
+    if (!instanceId) {
       // Now we're looking at a Spot Request, which has the LaunchSpecification
       // including the UserData as a source of finding the Worker Type
       let userData = JSON.parse(new Buffer(resource.LaunchSpecification.UserData));
       if (userData.workerType && userData.provisionerId === this.provisionerId) {
+        let workerType = userData.workerType;
+        this.__spotRequestIdCache.push({
+          id: srid,
+          region: region,
+          workerType: workerType,
+          created: Date.now(),
+        });
+        log.info({workerType}, 'found worker type from spot request user data');
         return userData.workerType;
       }
-    }
-  }
-
-  /**
-   * With best effort, try to map an instance ID in a region back to the worker
-   * type it's for, but only if it's the same provisioner we're operating with.
-   * Failures in the underlying EC2 calls will not be bubbled, rather will log
-   * and ignore.  An unknown worker type will have a `null` return value.
-   */
-  async getWorkerTypeFromUserData(region, instanceId) {
-    assert(typeof region === 'string');
-    assert(typeof instanceId === 'string');
-    log.info({region, instanceId}, 'getting user data');
-    let rawUserData;
-    try {
-      rawUserData = await this.ec2[region].describeInstanceAttribute({
-        Attribute: 'userData',
-        InstanceId: instanceId,
-      }).promise();
-    } catch (err) {
-      // Log it, but move on... this is a best effort service
-      log.error({
-        err,
-        instanceId,
-        region,
-      }, 'looking up user data of instance');
-      return null;
-    }
-
-    // Any failures related to formatting are a sign that this is not a provisioner
-    // owned instance, so we should just ignore it
-    try {
-      let userData = JSON.parse(new Buffer(rawUserData.data.UserData.Value, 'base64'));
-      if (userData.workerType && userData.provisionerId === this.provisionerId) {
-        return userData.workerType;
-      }
-      return null;
-    } catch (err) {
-      // All errors mean that the data was in an unexpected format.  Even a
-      // failure in the EC2 call is treated this way because this is a best
-      // effort service.  We'll just try again next time.
-      log.warn({
-        err,
-        rawUserData,
-      }, 'could not parse userdata');
-      return null;
     }
   }
 
