@@ -202,7 +202,7 @@ class AwsManager {
     // resource is created, forgotten about, then untagged.  For these cases,
     // we'll continue later on and use the instanceId checks when the request
     // turns into an instance.
-    let tag = _.find(resource.Tags || [], {Key: 'WorkerType'});
+    let tag = (_.find(resource.Tags || [], {Key: 'WorkerType'}) || {}).Value;
     if (tag && _.startsWith(tag, this.provisionerId + '/')) {
       this.__spotRequestIdCache.push({
         id: srid,
