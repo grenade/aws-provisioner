@@ -140,7 +140,6 @@ class AwsManager {
       //this.__internalState = [];
     }
 
-
   }
 
   async saveAwsManagerInternalState() {
@@ -204,12 +203,14 @@ class AwsManager {
     // turns into an instance.
     let tag = (_.find(resource.Tags || [], {Key: 'WorkerType'}) || {}).Value;
     if (tag && _.startsWith(tag, this.provisionerId + '/')) {
+      let workerType = tag.substr(this.provisionerId.length + 1);
       this.__spotRequestIdCache.push({
         id: srid,
         region: region,
         workerType: tag.substr(this.provisionerId.length + 1),
         created: Date.now(),
       });
+      return workerType;
     }
  
     // If we have no instance ID at this point, we cannot do any further
