@@ -212,34 +212,7 @@ class AwsManager {
       });
       return workerType;
     }
- 
-    // If we have no instance ID at this point, we cannot do any further
-    // checking to see which WorkerType this belongs to.  As well, since
-    // unfulfilled spot request don't cost us money, we're not worried about
-    // rouges costing money.
-    // TODO: Consider using DescribeTags with filters to see if this instance
-    // or spot request has already been tagged.  Also tag things as part of
-    // requestSpotInstance
-    if (!instanceId) {
-      // Now we're looking at a Spot Request, which has the LaunchSpecification
-      // including the UserData as a source of finding the Worker Type
-      let udraw = resource.LaunchSpecification.UserData;
-      console.dir(udraw);
-      let userData = JSON.parse(new Buffer(udraw, 'base64'));
-      console.dir(userData);
-      if (userData.workerType && userData.provisionerId === this.provisionerId) {
-        let workerType = userData.workerType;
-        this.__spotRequestIdCache.push({
-          id: srid,
-          region: region,
-          workerType: workerType,
-          created: Date.now(),
-        });
-        log.info({workerType}, 'found worker type from spot request user data');
-        return userData.workerType;
-      }
-    }
-  }
+}
 
   /**
    * Update the state from the AWS API
