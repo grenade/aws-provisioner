@@ -223,7 +223,7 @@ class AwsManager {
     if (!instanceId) {
       // Now we're looking at a Spot Request, which has the LaunchSpecification
       // including the UserData as a source of finding the Worker Type
-      let userData = JSON.parse(new Buffer(resource.LaunchSpecification.UserData));
+      let userData = JSON.parse(new Buffer(resource.LaunchSpecification.UserData, 'base64'));
       if (userData.workerType && userData.provisionerId === this.provisionerId) {
         let workerType = userData.workerType;
         this.__spotRequestIdCache.push({
